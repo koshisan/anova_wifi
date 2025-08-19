@@ -6,8 +6,6 @@ from .exceptions import (
     WebsocketFailure,
 )
 
-brokenbrokenbroken
-
 from .parser import AnovaApi
 from .web_socket_containers import (
     AnovaA3State,
