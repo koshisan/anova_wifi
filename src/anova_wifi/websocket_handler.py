@@ -40,50 +40,41 @@ def _attach_raw_fields(update: Any, message: dict[str, Any], device: APCWifiDevi
       - the COMPLETE raw websocket JSON (no filtering, no mutation),
       - convenience fields used by the HA layer (timer, versions, etc.),
       - and the cooking_stage (cook.activeStageMode).
-
-    This must never raise, so the WS pipeline keeps flowing.
+    Never raises.
     """
     try:
-        # (A) ALWAYS pass through full raw JSON for later use/debugging
+        # (A) Vollständiges Raw-JSON immer anhängen
         setattr(update, "raw_message", message)
         setattr(device, "last_raw_message", message)
 
-        # If we don't have a sensor container, stop here (but still keep raw_message!)
         sensor = getattr(update, "sensor", None)
         if sensor is None:
-            return
+            return  # kein Sensorcontainer, aber raw_message bleibt erhalten
 
-        # (B) Convenience handles from the raw JSON (optional but handy)
+        # (B) Convenience-Felder
         payload = message.get("payload", {}) if isinstance(message, dict) else {}
         state = payload.get("state", {}) or {}
         nodes = state.get("nodes", {}) or {}
         sysinfo = state.get("systemInfo", {}) or {}
 
-        # Mode as delivered by the device (e.g., 'cook' / 'idle')
         state_state = state.get("state", {}) or {}
         setattr(sensor, "mode_raw", state_state.get("mode"))
 
-        # Timer details (these are present in a6/a7; may be absent in other frames)
         t = nodes.get("timer", {}) or {}
         setattr(sensor, "timer_initial", t.get("initial"))
-        setattr(sensor, "timer_mode", t.get("mode"))  # 'idle'|'running'|'paused'|'completed' (device-dependent)
+        setattr(sensor, "timer_mode", t.get("mode"))  # 'idle'|'running'|'paused'|'completed'
         setattr(sensor, "timer_started_at", t.get("startedAtTimestamp"))
 
-        # Low water diagnostics
         lw = nodes.get("lowWater", {}) or {}
         setattr(sensor, "low_water_warning", lw.get("warning"))
         setattr(sensor, "low_water_empty", lw.get("empty"))
 
-        # Versions / online diagnostics
         setattr(sensor, "firmware_version", sysinfo.get("firmwareVersion"))
         setattr(sensor, "hardware_version", sysinfo.get("hardwareVersion"))
         setattr(sensor, "online", sysinfo.get("online"))
 
-        # (C) COOKING STAGE (exact passthrough, no guessing)
-        # Reads raw value as provided by device, e.g. 'entering', 'holding', ...
-        cooking_stage = (
-            nodes.get("cook", {}) or {}
-        ).get("activeStageMode")
+        # (C) Cooking Stage roh durchreichen
+        cooking_stage = (nodes.get("cook", {}) or {}).get("activeStageMode")
         setattr(sensor, "cooking_stage", cooking_stage)
 
     except Exception:
@@ -108,7 +99,6 @@ class AnovaWebsocketHandler:
             self.ws = await self.session.ws_connect(self.url)
         except WebSocketError as ex:
             raise WebsocketFailure("Failed to connect to the websocket") from ex
-        # prefer create_task over ensure_future in modern asyncio
         self._message_listener = asyncio.create_task(self.message_listener())
 
     async def disconnect(self) -> None:
@@ -145,15 +135,12 @@ class AnovaWebsocketHandler:
 
             device = self.devices.get(cooker_id)
             if device is None:
-                # state for unknown device → ignore silently
                 return
 
-            # Determine payload/state and type
             payload_state = _dig(message, ["payload", "state"], {}) or {}
             update = None
 
             if "job" in payload_state:
-                # legacy wifi-cooker-state body
                 update = build_wifi_cooker_state_body(payload_state).to_apc_update()
             else:
                 payload_type = _dig(message, ["payload", "type"])
@@ -162,13 +149,11 @@ class AnovaWebsocketHandler:
                 elif payload_type in {"a6", "a7"}:
                     update = build_a6_a7_payload(payload_state)
                 else:
-                    # unknown type → ignore
                     return
 
-            # Attach FULL raw JSON + convenience + cooking_stage
+            # Rohdaten + Cooking-Stage + Convenience an Update/Sensor hängen
             _attach_raw_fields(update, message, device)
 
-            # Notify integration
             if (ul := device.update_listener) is not None:
                 ul(update)
 
@@ -176,7 +161,6 @@ class AnovaWebsocketHandler:
         if self.ws is None:
             return
         async for msg in self.ws:
-            # aiohttp WSMessage: msg.data is already text for text frames
             try:
                 data = json.loads(msg.data)
             except Exception:
