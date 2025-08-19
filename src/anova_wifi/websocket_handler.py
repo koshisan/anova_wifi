@@ -57,24 +57,30 @@ def _attach_raw_fields(update: Any, message: dict[str, Any], device: APCWifiDevi
         nodes = state.get("nodes", {}) or {}
         sysinfo = state.get("systemInfo", {}) or {}
 
+        # Zustand/Modus
         state_state = state.get("state", {}) or {}
         setattr(sensor, "mode_raw", state_state.get("mode"))
 
+        # Timer
         t = nodes.get("timer", {}) or {}
         setattr(sensor, "timer_initial", t.get("initial"))
         setattr(sensor, "timer_mode", t.get("mode"))  # 'idle'|'running'|'paused'|'completed'
         setattr(sensor, "timer_started_at", t.get("startedAtTimestamp"))
 
+        # Low water
         lw = nodes.get("lowWater", {}) or {}
         setattr(sensor, "low_water_warning", lw.get("warning"))
         setattr(sensor, "low_water_empty", lw.get("empty"))
 
+        # Versionen / Online
         setattr(sensor, "firmware_version", sysinfo.get("firmwareVersion"))
         setattr(sensor, "hardware_version", sysinfo.get("hardwareVersion"))
         setattr(sensor, "online", sysinfo.get("online"))
 
-        # (C) Cooking Stage roh durchreichen
-        cooking_stage = (nodes.get("cook", {}) or {}).get("activeStageMode")
+        # (C) Cooking Stage roh durchreichen:
+        # WICHTIG: cook ist unter state, NICHT unter nodes.
+        cook = state.get("cook", {}) or {}
+        cooking_stage = cook.get("activeStageMode")
         setattr(sensor, "cooking_stage", cooking_stage)
 
     except Exception:
