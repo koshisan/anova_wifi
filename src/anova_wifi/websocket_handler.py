@@ -1,3 +1,9 @@
+# websocket_handler.py
+# -*- coding: utf-8 -*-
+"""Anova websocket handler with full raw JSON passthrough and cooking_stage extraction."""
+
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -30,40 +36,59 @@ def _dig(d: dict, path: list[str], default: Any = None) -> Any:
 
 def _attach_raw_fields(update: Any, message: dict[str, Any], device: APCWifiDevice) -> None:
     """
-    Enrich the APCUpdate/APCUpdateSensor with raw fields from the websocket message
-    and store the last raw message on the device for external consumers.
+    Enrich the APCUpdate/APCUpdateSensor with:
+      - the COMPLETE raw websocket JSON (no filtering, no mutation),
+      - convenience fields used by the HA layer (timer, versions, etc.),
+      - and the cooking_stage (cook.activeStageMode).
+
+    This must never raise, so the WS pipeline keeps flowing.
     """
     try:
-        # 0) komplettes JSON immer durchreichen
+        # (A) ALWAYS pass through full raw JSON for later use/debugging
         setattr(update, "raw_message", message)
         setattr(device, "last_raw_message", message)
 
+        # If we don't have a sensor container, stop here (but still keep raw_message!)
         sensor = getattr(update, "sensor", None)
         if sensor is None:
-            return  # nichts zu enrichen
+            return
 
-        # convenience-fields wie gehabt
+        # (B) Convenience handles from the raw JSON (optional but handy)
         payload = message.get("payload", {}) if isinstance(message, dict) else {}
         state = payload.get("state", {}) or {}
         nodes = state.get("nodes", {}) or {}
         sysinfo = state.get("systemInfo", {}) or {}
 
-        setattr(sensor, "mode_raw", state.get("state", {}).get("mode"))
+        # Mode as delivered by the device (e.g., 'cook' / 'idle')
+        state_state = state.get("state", {}) or {}
+        setattr(sensor, "mode_raw", state_state.get("mode"))
+
+        # Timer details (these are present in a6/a7; may be absent in other frames)
         t = nodes.get("timer", {}) or {}
         setattr(sensor, "timer_initial", t.get("initial"))
-        setattr(sensor, "timer_mode", t.get("mode"))
+        setattr(sensor, "timer_mode", t.get("mode"))  # 'idle'|'running'|'paused'|'completed' (device-dependent)
         setattr(sensor, "timer_started_at", t.get("startedAtTimestamp"))
 
+        # Low water diagnostics
         lw = nodes.get("lowWater", {}) or {}
         setattr(sensor, "low_water_warning", lw.get("warning"))
         setattr(sensor, "low_water_empty", lw.get("empty"))
 
+        # Versions / online diagnostics
         setattr(sensor, "firmware_version", sysinfo.get("firmwareVersion"))
         setattr(sensor, "hardware_version", sysinfo.get("hardwareVersion"))
         setattr(sensor, "online", sysinfo.get("online"))
 
+        # (C) COOKING STAGE (exact passthrough, no guessing)
+        # Reads raw value as provided by device, e.g. 'entering', 'holding', ...
+        cooking_stage = (
+            nodes.get("cook", {}) or {}
+        ).get("activeStageMode")
+        setattr(sensor, "cooking_stage", cooking_stage)
+
     except Exception:
         _LOGGER.debug("Raw enrichment failed (non-fatal).", exc_info=True)
+
 
 class AnovaWebsocketHandler:
     def __init__(self, firebase_jwt: str, jwt: str, session: ClientSession):
@@ -71,7 +96,7 @@ class AnovaWebsocketHandler:
         self.jwt = jwt
         self.session = session
         self.url = (
-            f"https://devices.anovaculinary.io/"
+            "https://devices.anovaculinary.io/"
             f"?token={self._firebase_jwt}&supportedAccessories=APC&platform=android"
         )
         self.devices: dict[str, APCWifiDevice] = {}
@@ -83,43 +108,52 @@ class AnovaWebsocketHandler:
             self.ws = await self.session.ws_connect(self.url)
         except WebSocketError as ex:
             raise WebsocketFailure("Failed to connect to the websocket") from ex
-        self._message_listener = asyncio.ensure_future(self.message_listener())
+        # prefer create_task over ensure_future in modern asyncio
+        self._message_listener = asyncio.create_task(self.message_listener())
 
     async def disconnect(self) -> None:
         if self.ws is not None:
             await self.ws.close()
+            self.ws = None
         if self._message_listener is not None:
             self._message_listener.cancel()
+            self._message_listener = None
 
     def on_message(self, message: dict[str, Any]) -> None:
-        _LOGGER.debug("Found message %s", message)
+        _LOGGER.debug("WS message: %s", message)
 
-        if message["command"] == AnovaCommand.EVENT_APC_WIFI_LIST:
-            payload = message["payload"]
+        cmd = message.get("command")
+        if cmd == AnovaCommand.EVENT_APC_WIFI_LIST:
+            payload = message.get("payload", [])
             for device in payload:
-                if device["cookerId"] not in self.devices:
-                    self.devices[device["cookerId"]] = APCWifiDevice(
-                        cooker_id=device["cookerId"],
-                        type=device["type"],
-                        paired_at=device["pairedAt"],
-                        name=device["name"],
+                cooker_id = device.get("cookerId")
+                if not cooker_id:
+                    continue
+                if cooker_id not in self.devices:
+                    self.devices[cooker_id] = APCWifiDevice(
+                        cooker_id=cooker_id,
+                        type=device.get("type"),
+                        paired_at=device.get("pairedAt"),
+                        name=device.get("name"),
                     )
+            return
 
-        elif message["command"] == AnovaCommand.EVENT_APC_STATE:
+        if cmd == AnovaCommand.EVENT_APC_STATE:
             cooker_id: Optional[str] = _dig(message, ["payload", "cookerId"])
             if not cooker_id:
                 return
 
             device = self.devices.get(cooker_id)
             if device is None:
-                # We received state for an unknown device; ignore silently.
+                # state for unknown device → ignore silently
                 return
 
-            update = None
+            # Determine payload/state and type
             payload_state = _dig(message, ["payload", "state"], {}) or {}
+            update = None
 
-            # Build the appropriate update object based on payload type/state
             if "job" in payload_state:
+                # legacy wifi-cooker-state body
                 update = build_wifi_cooker_state_body(payload_state).to_apc_update()
             else:
                 payload_type = _dig(message, ["payload", "type"])
@@ -128,17 +162,24 @@ class AnovaWebsocketHandler:
                 elif payload_type in {"a6", "a7"}:
                     update = build_a6_a7_payload(payload_state)
                 else:
-                    # Unknown / unsupported type
+                    # unknown type → ignore
                     return
 
-            # <<< NEW: attach raw JSON fields to the update + remember last raw on device
+            # Attach FULL raw JSON + convenience + cooking_stage
             _attach_raw_fields(update, message, device)
 
-            # Notify listener as before
+            # Notify integration
             if (ul := device.update_listener) is not None:
                 ul(update)
 
     async def message_listener(self) -> None:
-        if self.ws is not None:
-            async for msg in self.ws:
-                self.on_message(json.loads(msg.data))
+        if self.ws is None:
+            return
+        async for msg in self.ws:
+            # aiohttp WSMessage: msg.data is already text for text frames
+            try:
+                data = json.loads(msg.data)
+            except Exception:
+                _LOGGER.debug("Ignoring non-JSON WS frame: %r", msg.data)
+                continue
+            self.on_message(data)
