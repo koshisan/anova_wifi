@@ -34,45 +34,36 @@ def _attach_raw_fields(update: Any, message: dict[str, Any], device: APCWifiDevi
     and store the last raw message on the device for external consumers.
     """
     try:
-        # Mark raw message on device (handy for external readers)
+        # 0) komplettes JSON immer durchreichen
+        setattr(update, "raw_message", message)
         setattr(device, "last_raw_message", message)
-
-        # Extract convenient handles
-        payload = message.get("payload", {}) if isinstance(message, dict) else {}
-        state = payload.get("state", {})
-        nodes = state.get("nodes", {})
-        sysinfo = state.get("systemInfo", {})
 
         sensor = getattr(update, "sensor", None)
         if sensor is None:
-            return  # nothing to enrich
+            return  # nichts zu enrichen
 
-        # 1) Mode from state.state.mode (e.g., "cook", "idle")
-        state_state = state.get("state", {}) or {}
-        setattr(sensor, "mode_raw", state_state.get("mode"))
+        # convenience-fields wie gehabt
+        payload = message.get("payload", {}) if isinstance(message, dict) else {}
+        state = payload.get("state", {}) or {}
+        nodes = state.get("nodes", {}) or {}
+        sysinfo = state.get("systemInfo", {}) or {}
 
-        # 2) Timer fields
+        setattr(sensor, "mode_raw", state.get("state", {}).get("mode"))
         t = nodes.get("timer", {}) or {}
         setattr(sensor, "timer_initial", t.get("initial"))
         setattr(sensor, "timer_mode", t.get("mode"))
         setattr(sensor, "timer_started_at", t.get("startedAtTimestamp"))
 
-        # 3) Low water flags
         lw = nodes.get("lowWater", {}) or {}
         setattr(sensor, "low_water_warning", lw.get("warning"))
         setattr(sensor, "low_water_empty", lw.get("empty"))
 
-        # 4) Diagnostics
         setattr(sensor, "firmware_version", sysinfo.get("firmwareVersion"))
         setattr(sensor, "hardware_version", sysinfo.get("hardwareVersion"))
         setattr(sensor, "online", sysinfo.get("online"))
 
-        # 5) Optionally attach the entire raw message to the update
-        setattr(update, "raw", message)
-
-    except Exception:  # never break the WS pipeline due to enrichment
+    except Exception:
         _LOGGER.debug("Raw enrichment failed (non-fatal).", exc_info=True)
-
 
 class AnovaWebsocketHandler:
     def __init__(self, firebase_jwt: str, jwt: str, session: ClientSession):
