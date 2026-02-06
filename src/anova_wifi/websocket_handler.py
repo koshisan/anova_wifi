@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from asyncio import Future
 from typing import Any, Optional
 
@@ -173,3 +174,68 @@ class AnovaWebsocketHandler:
                 _LOGGER.debug("Ignoring non-JSON WS frame: %r", msg.data)
                 continue
             self.on_message(data)
+
+    async def send_command(self, command: dict[str, Any]) -> bool:
+        """Send a command to the websocket."""
+        if self.ws is None or self.ws.closed:
+            _LOGGER.error("Cannot send command: WebSocket not connected")
+            return False
+        try:
+            await self.ws.send_json(command)
+            _LOGGER.debug("Sent command: %s", command.get("command"))
+            return True
+        except Exception as ex:
+            _LOGGER.error("Failed to send command: %s", ex)
+            return False
+
+    async def start_cook(self, cooker_id: str, target_temperature: float, timer_seconds: int = 0) -> bool:
+        """Start cooking on a sous vide device."""
+        device = self.devices.get(cooker_id)
+        if device is None:
+            _LOGGER.error("Device %s not found", cooker_id)
+            return False
+        command = {
+            "command": AnovaCommand.CMD_APC_START.value,
+            "requestId": str(uuid.uuid4()),
+            "payload": {"cookerId": cooker_id, "type": device.type, "targetTemperature": target_temperature, "unit": "C", "timer": timer_seconds},
+        }
+        return await self.send_command(command)
+
+    async def stop_cook(self, cooker_id: str) -> bool:
+        """Stop cooking on a sous vide device."""
+        device = self.devices.get(cooker_id)
+        if device is None:
+            _LOGGER.error("Device %s not found", cooker_id)
+            return False
+        command = {
+            "command": AnovaCommand.CMD_APC_STOP.value,
+            "requestId": str(uuid.uuid4()),
+            "payload": {"cookerId": cooker_id, "type": device.type},
+        }
+        return await self.send_command(command)
+
+    async def set_target_temperature(self, cooker_id: str, target_temperature: float) -> bool:
+        """Set target temperature on a sous vide device."""
+        device = self.devices.get(cooker_id)
+        if device is None:
+            _LOGGER.error("Device %s not found", cooker_id)
+            return False
+        command = {
+            "command": AnovaCommand.CMD_APC_SET_TARGET_TEMP.value,
+            "requestId": str(uuid.uuid4()),
+            "payload": {"cookerId": cooker_id, "type": device.type, "targetTemperature": target_temperature, "unit": "C"},
+        }
+        return await self.send_command(command)
+
+    async def set_timer(self, cooker_id: str, timer_seconds: int) -> bool:
+        """Set timer on a sous vide device."""
+        device = self.devices.get(cooker_id)
+        if device is None:
+            _LOGGER.error("Device %s not found", cooker_id)
+            return False
+        command = {
+            "command": AnovaCommand.CMD_APC_SET_TIMER.value,
+            "requestId": str(uuid.uuid4()),
+            "payload": {"cookerId": cooker_id, "type": device.type, "timer": timer_seconds},
+        }
+        return await self.send_command(command)
