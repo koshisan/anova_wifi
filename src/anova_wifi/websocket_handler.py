@@ -161,8 +161,11 @@ class AnovaWebsocketHandler:
             # Rohdaten + Cooking-Stage + Convenience an Update/Sensor hängen
             _attach_raw_fields(update, message, device)
 
+            _LOGGER.debug("Device %s update_listener: %s", cooker_id, device.update_listener)
             if (ul := device.update_listener) is not None:
                 ul(update)
+            else:
+                _LOGGER.warning("Device %s has NO update_listener!", cooker_id)
 
     async def message_listener(self) -> None:
         if self.ws is None:
