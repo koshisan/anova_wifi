@@ -89,6 +89,9 @@ def _attach_raw_fields(update: Any, message: dict[str, Any], device: APCWifiDevi
 
 
 class AnovaWebsocketHandler:
+    # Class-level devices dict - persists across handler instances!
+    _global_devices: dict[str, APCWifiDevice] = {}
+    
     def __init__(self, firebase_jwt: str, jwt: str, session: ClientSession):
         self._firebase_jwt = firebase_jwt
         self.jwt = jwt
@@ -97,10 +100,11 @@ class AnovaWebsocketHandler:
             "https://devices.anovaculinary.io/"
             f"?token={self._firebase_jwt}&supportedAccessories=APC&platform=android"
         )
-        self.devices: dict[str, APCWifiDevice] = {}
+        # Use class-level devices to preserve listeners across reconnects!
+        self.devices = AnovaWebsocketHandler._global_devices
         self.ws: ClientWebSocketResponse | None = None
         self._message_listener: Future[None] | None = None
-        _LOGGER.info("NEW AnovaWebsocketHandler created, id=%s", id(self))
+        _LOGGER.info("AnovaWebsocketHandler created, using shared devices dict with %d devices", len(self.devices))
 
     async def connect(self) -> None:
         try:
@@ -127,7 +131,8 @@ class AnovaWebsocketHandler:
                 cooker_id = device.get("cookerId")
                 if not cooker_id:
                     continue
-                if cooker_id not in self.devices:
+                existing = self.devices.get(cooker_id)
+                if existing is None:
                     self.devices[cooker_id] = APCWifiDevice(
                         cooker_id=cooker_id,
                         type=device.get("type"),
@@ -136,7 +141,7 @@ class AnovaWebsocketHandler:
                     )
                     _LOGGER.debug("Created NEW device %s", cooker_id)
                 else:
-                    _LOGGER.debug("Device %s already exists, listener: %s", cooker_id, self.devices[cooker_id].update_listener)
+                    _LOGGER.debug("Device %s already exists, keeping listener: %s", cooker_id, existing.update_listener)
             return
 
         if cmd == AnovaCommand.EVENT_APC_STATE:
