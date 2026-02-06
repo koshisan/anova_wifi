@@ -100,6 +100,7 @@ class AnovaWebsocketHandler:
         self.devices: dict[str, APCWifiDevice] = {}
         self.ws: ClientWebSocketResponse | None = None
         self._message_listener: Future[None] | None = None
+        _LOGGER.info("NEW AnovaWebsocketHandler created, id=%s", id(self))
 
     async def connect(self) -> None:
         try:
@@ -133,6 +134,9 @@ class AnovaWebsocketHandler:
                         paired_at=device.get("pairedAt"),
                         name=device.get("name"),
                     )
+                    _LOGGER.debug("Created NEW device %s", cooker_id)
+                else:
+                    _LOGGER.debug("Device %s already exists, listener: %s", cooker_id, self.devices[cooker_id].update_listener)
             return
 
         if cmd == AnovaCommand.EVENT_APC_STATE:
