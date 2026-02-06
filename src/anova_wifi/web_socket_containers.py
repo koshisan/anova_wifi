@@ -343,10 +343,31 @@ def build_a3_payload(apc_response: dict[str, Any]) -> APCUpdate:
 
 
 def build_a6_a7_payload(apc_response: dict[str, Any]) -> APCUpdate:
+    from datetime import datetime, timezone
+    
     system_info = apc_response["systemInfo"]
     firmware_version = system_info["firmwareVersion"]
     mode = apc_response["state"]["mode"]
     nodes = apc_response["nodes"]
+    timer = nodes.get("timer", {})
+    
+    # Calculate cook_time_remaining if timer is running
+    cook_time_remaining = None
+    timer_initial = int(timer.get("initial", 0))
+    timer_started = timer.get("startedAtTimestamp")
+    timer_mode = timer.get("mode")
+    
+    if timer_initial > 0 and timer_started and timer_mode == "running":
+        try:
+            # Parse ISO timestamp (handle both with and without Z suffix)
+            started_str = timer_started.replace("Z", "+00:00")
+            started_dt = datetime.fromisoformat(started_str)
+            now = datetime.now(timezone.utc)
+            elapsed = (now - started_dt).total_seconds()
+            cook_time_remaining = max(0, int(timer_initial - elapsed))
+        except Exception:
+            pass
+    
     sensors = APCUpdateSensor(
         firmware_version=firmware_version,
         mode=mode,
@@ -354,7 +375,8 @@ def build_a6_a7_payload(apc_response: dict[str, Any]) -> APCUpdate:
         target_temperature=float(
             nodes["waterTemperatureSensor"]["setpoint"]["celsius"]
         ),
-        cook_time=int(nodes["timer"]["initial"]),
+        cook_time=timer_initial,
+        cook_time_remaining=cook_time_remaining,
     )
     binary_sensors = APCUpdateBinary(
         cooking=bool(mode == "cook"),
