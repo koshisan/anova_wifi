@@ -347,15 +347,27 @@ class AnovaWebsocketHandler:
 
     async def send_command(self, command: dict[str, Any]) -> bool:
         """Send a command to the websocket."""
+        # Try to reconnect if not connected
         if self.ws is None or self.ws.closed:
-            _LOGGER.error("[ANOVA-WS] Cannot send command: WebSocket not connected")
+            _LOGGER.warning("[ANOVA-WS] WebSocket not connected, attempting reconnect before send...")
+            try:
+                await self._do_connect()
+            except Exception as ex:
+                _LOGGER.error("[ANOVA-WS] Reconnect failed: %s", ex)
+                return False
+        
+        if self.ws is None or self.ws.closed:
+            _LOGGER.error("[ANOVA-WS] Cannot send command: WebSocket still not connected after reconnect attempt")
             return False
+            
         try:
             await self.ws.send_json(command)
             _LOGGER.info("[ANOVA-WS] >> Sent: %s", command.get("command"))
             return True
         except Exception as ex:
             _LOGGER.error("[ANOVA-WS] Failed to send command: %s", ex)
+            # Mark ws as dead so next attempt will reconnect
+            self.ws = None
             return False
 
     async def start_cook(self, cooker_id: str, target_temperature: float, timer_seconds: int = 0) -> bool:
