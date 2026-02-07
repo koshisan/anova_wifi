@@ -219,10 +219,11 @@ class AnovaWebsocketHandler:
                 cook.get("activeStageMode")
             )
             _LOGGER.info(
-                "[ANOVA-WS]   timer: mode=%s | initial=%s | startedAt=%s",
+                "[ANOVA-WS]   timer: mode=%s | initial=%s | startedAt=%s | RAW=%s",
                 timer.get("mode"),
                 timer.get("initial"),
-                timer.get("startedAtTimestamp")
+                timer.get("startedAtTimestamp"),
+                timer  # Log the full timer object to see all fields
             )
             _LOGGER.info(
                 "[ANOVA-WS]   temps: water=%s | target=%s | heater=%s",
@@ -383,13 +384,19 @@ class AnovaWebsocketHandler:
         if device is None:
             _LOGGER.error("[ANOVA-WS] Device %s not found", cooker_id)
             return False
+        request_id = str(uuid.uuid4())
         command = {
             "command": AnovaCommand.CMD_APC_STOP.value,
-            "requestId": str(uuid.uuid4()),
+            "requestId": request_id,
             "payload": {"cookerId": cooker_id, "type": device.type},
         }
-        _LOGGER.info("[ANOVA-WS] stop_cook: %s", cooker_id)
-        return await self.send_command(command)
+        _LOGGER.info(
+            "[ANOVA-WS] stop_cook: cooker=%s type=%s reqId=%s command=%s", 
+            cooker_id, device.type, request_id, command
+        )
+        result = await self.send_command(command)
+        _LOGGER.info("[ANOVA-WS] stop_cook result: %s", result)
+        return result
 
     async def set_target_temperature(self, cooker_id: str, target_temperature: float) -> bool:
         """Set target temperature on a sous vide device."""
